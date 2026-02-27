@@ -1,0 +1,104 @@
+{
+  "level": "intermediate",
+  "raw_score": "7/12",
+  "weighted_score_pct": 63.9,
+  "category_breakdown": {
+    "fundamental_safety": {
+      "correct": 3,
+      "total": 4
+    },
+    "strategy_application": {
+      "correct": 3,
+      "total": 4
+    },
+    "advanced_risk": {
+      "correct": 1,
+      "total": 4
+    }
+  },
+  "strengths": [
+    {
+      "concept": "basic_risk_understanding",
+      "concept_label": "Basic Risk: Maximum loss on a long options position",
+      "description": "Understands that buying a call option caps the maximum loss to the premium paid, correctly distinguishing the asymmetric risk profile of long options from short positions or direct stock ownership where losses can be far larger."
+    },
+    {
+      "concept": "covered_call_strategy",
+      "concept_label": "Covered Calls: Income generation from existing holdings",
+      "description": "Knows to sell exactly 2 contracts to match a 200-share holding and targets the $190 strike aligned with the desired exit price \u2014 demonstrates practical covered call sizing, contract-to-share ratio awareness, and income-vs-exit goal alignment."
+    },
+    {
+      "concept": "time_decay_theta",
+      "concept_label": "Time Decay (Theta): How options lose value over time",
+      "description": "Correctly attributes the erosion of option value near expiration to Theta (time decay) rather than Delta or volatility changes \u2014 shows awareness that time itself is a built-in cost when holding long options, critical for trade timing decisions."
+    },
+    {
+      "concept": "delta_greek",
+      "concept_label": "Delta: Option price sensitivity to underlying movement",
+      "description": "Understands Delta as the rate of change of an option's price per $1 move in the underlying stock \u2014 a foundational Greek concept essential for position sizing, hedging ratios, and understanding directional exposure."
+    },
+    {
+      "concept": "cash_secured_puts",
+      "concept_label": "Cash-Secured Puts: Strategic entry at target price with premium income",
+      "description": "Recognises that selling cash-secured puts is the optimal strategy to acquire a stock at a desired lower price while collecting premium income in the meantime \u2014 avoids the purely passive 'wait and watch' approach and understands the obligation being taken on."
+    },
+    {
+      "concept": "implied_volatility_earnings",
+      "concept_label": "Implied Volatility: Pre-earnings IV expansion",
+      "description": "Correctly understands that option prices rise before earnings announcements due to implied volatility expansion driven by uncertainty \u2014 critical knowledge for timing option entries and exits around catalyst events."
+    },
+    {
+      "concept": "multi_leg_strategies",
+      "concept_label": "Multi-Leg Strategies: Iron condor mechanics and profit conditions",
+      "description": "Correctly identifies that an iron condor profits when the underlying stays range-bound between the two short strikes \u2014 demonstrates understanding of 4-leg strategy construction, defined-risk mechanics, and the neutrality bias of the position."
+    }
+  ],
+  "weaknesses": [
+    {
+      "concept": "portfolio_protection",
+      "concept_label": "Portfolio Protection: Using puts to hedge downside risk",
+      "description": "Chose 'Buy more tech stocks when they drop' instead of buying protective puts.",
+      "misconception": "Defaults to a buy-the-dip reflex under market stress rather than recognising that protective puts allow staying invested in the portfolio while capping downside risk. Conflates bullish conviction with risk management \u2014 misses that options can act as portfolio insurance without requiring liquidation.",
+      "priority": "high"
+    },
+    {
+      "concept": "assignment_mechanics",
+      "concept_label": "Assignment Mechanics: What happens when ITM options expire",
+      "description": "Chose 'Keep the stock and the $3' instead of recognising that ITM calls at expiry result in share assignment.",
+      "misconception": "Does not account for the near-certain assignment when a covered call expires in-the-money. Treats the covered call as if it simply expires worthlessly regardless of where the stock trades. Misses the core obligation: when the short call is ITM at expiry, the seller is expected to deliver shares at the strike price \u2014 keeping both the stock and premium is not an option.",
+      "priority": "medium"
+    },
+    {
+      "concept": "expiration_management",
+      "concept_label": "Expiration Management: Actively managing ITM positions near expiry",
+      "description": "Chose 'Let them all expire automatically' instead of managing each position based on assignment risk and portfolio impact.",
+      "misconception": "Treats multiple ITM options expiring simultaneously as passive, self-resolving events. Underestimates the compounding assignment risk, potential capital requirement, and portfolio-level disruption of allowing 5 concurrent ITM positions to expire without active review or decision-making on each.",
+      "priority": "medium"
+    },
+    {
+      "concept": "gamma_exposure",
+      "concept_label": "Gamma: Accelerating delta sensitivity near expiry",
+      "description": "Chose 'You're protected against volatility' \u2014 which is the opposite of what high Gamma implies.",
+      "misconception": "Inverts the actual meaning of high Gamma exposure. High Gamma means that Delta is rapidly changing and even small moves in the underlying can cause large, accelerating swings in option value \u2014 making the portfolio more sensitive and unstable, not protected. Conflates a risk amplifier with a risk mitigant.",
+      "priority": "low"
+    },
+    {
+      "concept": "volatility_crush",
+      "concept_label": "Volatility Crush: Post-earnings IV collapse and its impact on options",
+      "description": "Chose 'Time decay acceleration' to explain a 30% overnight options loss when the stock only dropped 5%.",
+      "misconception": "Misattributes a sharp post-earnings options loss to Theta (time decay) when the magnitude and speed of the loss \u2014 overnight, on a minor stock move \u2014 is a classic signature of implied volatility crush. Misses that IV collapses sharply once the earnings uncertainty resolves, deflating option premiums regardless of whether the stock moves in the anticipated direction.",
+      "priority": "low"
+    }
+  ],
+  "available_actions": [
+    "All beginner features",
+    "Covered calls on your existing stocks",
+    "Protective puts for portfolio protection",
+    "Cash-secured puts for strategic entry",
+    "Real-time P&L with your actual tickers",
+    "Position sizes up to 10% of portfolio",
+    "Real-time Greeks and P&L attribution",
+    "Multi-leg strategies (limited to 2 legs)"
+  ],
+  "generated_at": "2026-02-26T16:05:41.575347"
+}

@@ -1,0 +1,176 @@
+{
+  "investor_level": "intermediate",
+  "portfolio_summary": {
+    "total_value": 200000,
+    "etf_value": 119513.0,
+    "stock_value": 79507.0,
+    "covered_call_eligible_positions": [
+      "SCHD",
+      "IWM",
+      "PLTR",
+      "BAC",
+      "SOFI",
+      "WFC"
+    ],
+    "covered_call_ineligible_count": 8,
+    "ineligible_reason": "SPY (50 shares), QQQ (57 shares), NVDA (45 shares), TSLA (18 shares), META (9 shares), SHOP (50 shares), AMZN (24 shares), and MSFT (24 shares) all hold fewer than 100 shares \u2014 the minimum required to write one covered call contract. Each contract controls 100 shares."
+  },
+  "strategy_recommendations": {
+    "income": [
+      {
+        "ticker": "SCHD",
+        "strategy": "covered_call",
+        "contracts": 3,
+        "suggested_strike_delta": "0.15\u20130.20 (OTM, low assignment risk)",
+        "suggested_expiry": "30\u201345 days (monthly cycle)",
+        "est_monthly_premium_usd": 378.0,
+        "rationale": "357 shares supports 3 contracts. SCHD is a low-volatility dividend ETF \u2014 ideal for a disciplined covered call factory. Low assignment risk at 0.15\u20130.20 delta preserves upside while capturing reliable theta decay. Highest single-position income contributor at $4,536/yr."
+      },
+      {
+        "ticker": "IWM",
+        "strategy": "covered_call",
+        "contracts": 1,
+        "suggested_strike_delta": "0.15\u20130.20 (OTM, low assignment risk)",
+        "suggested_expiry": "30\u201345 days (monthly cycle)",
+        "est_monthly_premium_usd": 322.0,
+        "rationale": "139 shares supports 1 contract. IWM has higher volatility than SCHD, translating to richer premiums (~$322/mo). Tight bid-ask spreads as a major ETF make this easy to manage. Strong income at $3,864/yr from a single contract."
+      },
+      {
+        "ticker": "PLTR",
+        "strategy": "covered_call",
+        "contracts": 1,
+        "suggested_strike_delta": "0.15\u20130.20 (OTM, low assignment risk)",
+        "suggested_expiry": "30\u201345 days (monthly cycle)",
+        "est_monthly_premium_usd": 145.0,
+        "rationale": "103 shares (just over threshold) supports 1 contract. PLTR has elevated implied volatility as an AI/data analytics growth stock \u2014 premium is attractive at $145/mo. Use OTM strike to preserve significant upside exposure on this high-conviction growth name."
+      },
+      {
+        "ticker": "BAC",
+        "strategy": "covered_call",
+        "contracts": 2,
+        "suggested_strike_delta": "0.15\u20130.20 (OTM, low assignment risk)",
+        "suggested_expiry": "30\u201345 days (monthly cycle)",
+        "est_monthly_premium_usd": 135.0,
+        "rationale": "222 shares supports 2 contracts. BAC is a value-oriented banking bellwether with moderate volatility. Writing 2 contracts at 0.15\u20130.20 delta generates $135/mo while allowing meaningful upside. Pairs well with BAC's existing dividend income."
+      },
+      {
+        "ticker": "SOFI",
+        "strategy": "covered_call",
+        "contracts": 6,
+        "suggested_strike_delta": "0.15\u20130.20 (OTM, low assignment risk)",
+        "suggested_expiry": "30\u201345 days (monthly cycle)",
+        "est_monthly_premium_usd": 135.0,
+        "rationale": "666 shares supports 6 contracts \u2014 the most contracts available in the portfolio. Despite the low share price ($15), the 6-contract bundle generates $135/mo. SOFI's fintech growth profile adds volatility premium. Highest contract-count position enables systematic income at scale."
+      },
+      {
+        "ticker": "WFC",
+        "strategy": "covered_call",
+        "contracts": 1,
+        "suggested_strike_delta": "0.15\u20130.20 (OTM, low assignment risk)",
+        "suggested_expiry": "30\u201345 days (monthly cycle)",
+        "est_monthly_premium_usd": 112.0,
+        "rationale": "133 shares supports 1 contract. WFC is a stable U.S. retail/commercial bank \u2014 reliable premium source at $112/mo. Conservative delta selection ensures the position is unlikely to be called away, preserving the holding while generating $1,344/yr."
+      }
+    ],
+    "protection": [
+      {
+        "ticker": "SPY",
+        "strategy": "protective_put",
+        "suggested_strike": "~10% OTM ($540)",
+        "suggested_expiry": "60\u201390 days (roll quarterly)",
+        "est_monthly_cost_usd": 210.0,
+        "rationale": "SPY is the $30k core anchor. A 10% OTM put at 60\u201390 DTE provides a meaningful downside floor at a reasonable cost relative to position size. This is priority-tier protection \u2014 preserving the broad market foundation of the portfolio. Roll quarterly to maintain continuous coverage."
+      },
+      {
+        "ticker": "QQQ",
+        "strategy": "protective_put",
+        "suggested_strike": "~10% OTM ($468)",
+        "suggested_expiry": "60\u201390 days (roll quarterly)",
+        "est_monthly_cost_usd": 207.0,
+        "rationale": "QQQ is the second anchor at ~$29,640. Tech-heavy Nasdaq-100 concentration warrants dedicated put protection. A 10% OTM strike caps max drawdown on this position at ~10% before the put kicks in. Combined with SPY protection, these two puts hedge ~$60k of core portfolio value."
+      },
+      {
+        "ticker": "NVDA",
+        "strategy": "protective_put",
+        "suggested_strike": "~10% OTM ($119)",
+        "suggested_expiry": "60\u201390 days (roll quarterly)",
+        "est_monthly_cost_usd": 42.0,
+        "rationale": "NVDA is a high-beta AI/semiconductor name. At $5,940, the position is smaller but significantly more volatile. A put at $119 (10% OTM) limits downside for just $42/mo \u2014 excellent cost-efficiency given NVDA's historical drawdown potential. Preserves the growth thesis while flooring catastrophic loss."
+      },
+      {
+        "ticker": "TSLA",
+        "strategy": "protective_put",
+        "suggested_strike": "~10% OTM ($297)",
+        "suggested_expiry": "60\u201390 days (roll quarterly)",
+        "est_monthly_cost_usd": 42.0,
+        "rationale": "TSLA has among the highest volatility in the portfolio \u2014 EV, autonomous driving, and macro sentiment all drive outsized moves. At $42/mo, a put at $297 is cost-effective insurance on this volatile hold_growth position. Allows the investor to stay long without unlimited downside exposure."
+      }
+    ],
+    "accumulation": [
+      {
+        "ticker": "MSFT",
+        "strategy": "cash_secured_put",
+        "current_shares": 24,
+        "shares_to_goal": 76,
+        "suggested_strike": "~$371 (10% OTM from $412 current price)",
+        "est_premium_usd": 150.0,
+        "rationale": "MSFT is the highest-quality ineligible stock at 24 shares \u2014 76 shares short of covered call eligibility. Selling a cash-secured put at ~$371 (10% OTM) collects an estimated $150/mo premium while committing to buy 100 shares at a discounted price if assigned. Either outcome is favorable: collect premium and repeat if not assigned, or acquire 100 MSFT shares at ~$371 and immediately begin writing covered calls (~$180\u2013200/mo estimated). Requires $37,100 in cash collateral \u2014 within the intermediate investor's $30,000 max total options exposure limit when combined with other trades. Start with 1 contract and reassess monthly."
+      }
+    ]
+  },
+  "position_sizing_rules": {
+    "max_per_trade_pct": 5.0,
+    "max_total_exposure_pct": 15.0,
+    "max_per_trade_usd": 10000.0,
+    "max_total_exposure_usd": 30000.0
+  },
+  "estimated_annual_impact": {
+    "gross_income_usd": 14724.0,
+    "protection_cost_usd": 6012.0,
+    "net_impact_usd": 8712.0,
+    "net_impact_pct_of_portfolio": 4.36
+  },
+  "portfolio_greeks_overview": {
+    "delta_summary": "The portfolio is strongly net long delta \u2014 approximately $200k of long equity exposure. Covered calls on 6 positions slightly reduce effective delta by capping upside on those names (equivalent to being short a small amount of delta on each). Protective puts on SPY, QQQ, NVDA, and TSLA add negative delta hedges worth roughly $65k notional at 10% OTM, cushioning the portfolio by approximately $6,500 in put payoff per $10 drop in those anchors. Net delta remains robustly positive: the portfolio still gains meaningfully as markets rise, but has a structured floor on the downside.",
+    "theta_summary": "Time decay is a net positive for this overlay. The 14 covered call contracts generate approximately +$41/day in positive theta (time decay earns money as expiry approaches). The 4 protective puts consume approximately \u2212$17/day in negative theta (cost of insurance erodes daily). Net theta is approximately +$24/day \u2014 meaning the options overlay earns roughly $720/month from time passage alone, independent of market direction. This is the core engine of the income strategy.",
+    "vega_summary": "The portfolio is modestly net short vega. Covered calls sold on 6 positions create short vega exposure \u2014 if implied volatility rises sharply, those calls become more expensive to buy back (temporary paper loss). However, the 4 protective puts held are long vega \u2014 they increase in value when volatility spikes, partially offsetting the short-vega risk from covered calls. Net effect: the portfolio performs best in stable-to-moderately-volatile environments (CC premiums are captured cleanly) and is partially self-hedged against volatility explosions via the protective put positions."
+  },
+  "priority_actions": [
+    {
+      "rank": 1,
+      "ticker": "SCHD",
+      "action": "Write 3 covered calls",
+      "specific_trade": "Sell 3x SCHD $91 calls, 35 DTE (0.15\u20130.20 delta), collect ~$126/contract = ~$378 total premium",
+      "rationale": "Highest-impact, lowest-complexity first step. SCHD is a dividend ETF \u2014 stable, liquid, low vol. Three contracts generate $378/month ($4,536/yr) with minimal assignment risk at 10%+ OTM. This is the portfolio's covered call anchor and should be deployed immediately."
+    },
+    {
+      "rank": 2,
+      "ticker": "IWM",
+      "action": "Write 1 covered call",
+      "specific_trade": "Sell 1x IWM $236 call, 35 DTE (0.15\u20130.20 delta), collect ~$322 total premium",
+      "rationale": "IWM's higher volatility vs SCHD generates $322/month from a single contract \u2014 the best per-contract yield in the portfolio. As a major ETF, IWM has excellent liquidity and tight spreads, making it easy to enter, monitor, and roll. Deploy in the same session as SCHD."
+    },
+    {
+      "rank": 3,
+      "ticker": "SPY + QQQ",
+      "action": "Buy protective puts on both anchor ETFs",
+      "specific_trade": "Buy 1x SPY $540 put (75 DTE) + 1x QQQ $468 put (75 DTE), total cost ~$417/month amortized",
+      "rationale": "With $60k concentrated in two anchor ETFs, downside protection is essential. Buying 75 DTE puts at ~10% OTM on both simultaneously gives 2.5 months of coverage, allows quarterly rolling, and ensures the core portfolio cannot suffer catastrophic losses from a broad market correction. The income from SCHD + IWM covered calls ($700/mo) more than offsets this protection cost ($417/mo)."
+    },
+    {
+      "rank": 4,
+      "ticker": "SOFI",
+      "action": "Write 6 covered calls",
+      "specific_trade": "Sell 6x SOFI $16.50 calls, 35 DTE (0.15\u20130.20 delta), collect ~$22.50/contract = ~$135 total premium",
+      "rationale": "666 shares gives the most contracts in the portfolio. Although individual contract premiums are modest (SOFI trades at $15), the 6-contract bundle generates $135/mo ($1,620/yr) with a single trade decision. SOFI's fintech growth profile supports healthy implied volatility. High share count makes rolling efficient."
+    },
+    {
+      "rank": 5,
+      "ticker": "MSFT",
+      "action": "Sell 1 cash-secured put to accumulate toward covered call eligibility",
+      "specific_trade": "Sell 1x MSFT $371 put, 35 DTE (10% OTM), collect ~$150 premium; set aside $37,100 cash collateral",
+      "rationale": "MSFT is the highest-quality stock not yet eligible for covered calls (only 24 of 100 shares needed). Selling a $371 put either collects $150 in premium (if not assigned) or acquires 100 shares at an effective cost of $369.50/share \u2014 a 10%+ discount. Once assigned, the position immediately becomes a covered call writer generating ~$190/mo. This is a patient, disciplined accumulation play with no bad outcomes for a long-term MSFT bull."
+    }
+  ],
+  "generated_at": "2026-02-26T16:07:27.868162"
+}
