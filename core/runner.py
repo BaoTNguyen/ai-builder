@@ -9,8 +9,6 @@ end_turn (or an unexpected stop reason), then returns.
 import json
 from anthropic import Anthropic
 
-client = Anthropic()
-
 
 def run_agent(
     system_prompt: str,
@@ -33,6 +31,7 @@ def run_agent(
         label:         short name shown in the "Running…" line
     """
     print(f"Running {label}…\n")
+    client = Anthropic()
 
     while True:
         response = client.messages.create(

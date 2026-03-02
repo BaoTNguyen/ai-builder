@@ -8,7 +8,7 @@ Five tools in total:
     3. store_investor_profile — persists the final JSON
 
   Action gate (2 tools, called when a user attempts a feature):
-    4. check_action_permission  — returns allowed/blocked + alternatives
+    4. check_action_permission  — returns a notification (advisory | warning | null)
     5. create_paper_portfolio   — mirrors the real portfolio for paper trading
 
 Keeping implementations here (separate from agent.py) means they can be
@@ -128,17 +128,11 @@ def store_investor_profile(profile: dict, filepath: str = "profiles/investor_pro
 
 # ─── Action Gate ──────────────────────────────────────────────────────────────
 
-def _evaluate_context_gates(context: dict) -> str | None:
+def _highest_context_level(context: dict) -> str | None:
     """
-    Evaluates context-based gates and returns the highest required level
-    triggered by the context, or None if no context gate fires.
-
-    Context keys:
-      leg_count             (int)  — legs in the attempted trade
-      concurrent_positions  (int)  — currently open options positions
-      cross_ticker_count    (int)  — distinct tickers with options activity
-      is_undefined_risk     (bool) — position carries unlimited loss potential
-      has_multiple_expirations (bool) — trade spans more than one expiry date
+    Returns the highest level required by any context gate that fires,
+    or None if none fire. Skips is_undefined_risk — that is handled
+    separately as a warning trigger, not a level gap signal.
     """
     if not context:
         return None
@@ -147,14 +141,16 @@ def _evaluate_context_gates(context: dict) -> str | None:
     highest_level = None
 
     for gate in CONTEXT_GATES:
+        if gate["condition"] == "is_undefined_risk":
+            continue  # handled separately as a warning, not an advisory gap
+
         key = gate["condition"]
         val = context.get(key)
         if val is None:
             continue
 
-        fired = False
         op = gate["operator"]
-
+        fired = False
         if op == ">=" and isinstance(val, (int, float)):
             fired = val >= gate["threshold"]
         elif op == "between" and isinstance(val, (int, float)):
@@ -164,13 +160,42 @@ def _evaluate_context_gates(context: dict) -> str | None:
             fired = bool(val)
 
         if fired:
-            level = gate["min_level"]
-            rank = LEVEL_ORDER[level]
+            rank = LEVEL_ORDER[gate["min_level"]]
             if rank > highest_rank:
                 highest_rank = rank
-                highest_level = level
+                highest_level = gate["min_level"]
 
     return highest_level
+
+
+def _build_suggestions(action_label: str, investor_rank: int) -> list:
+    next_level = {0: "intermediate", 1: "advanced"}.get(investor_rank, "advanced")
+    return [
+        {
+            "action": "learn_more",
+            "label": f"Learn about {action_label}",
+            "description": (
+                f"Read a guide on how {action_label} works, "
+                f"including real examples and risk/reward tradeoffs."
+            ),
+        },
+        {
+            "action": "take_assessment",
+            "label": f"Take the {next_level} assessment",
+            "description": (
+                f"Complete the {next_level}-level knowledge check (~5 minutes). "
+                f"It gives you a clearer picture of where your gaps are."
+            ),
+        },
+        {
+            "action": "paper_trading",
+            "label": "Try it in paper trading first",
+            "description": (
+                "Practice this strategy on an exact replica of your portfolio "
+                "with no real money at risk."
+            ),
+        },
+    ]
 
 
 def check_action_permission(
@@ -179,13 +204,22 @@ def check_action_permission(
     context: dict | None = None,
 ) -> dict:
     """
-    Two-layer gate: checks the named strategy requirement AND any context-based
-    signals, then returns the stricter of the two.
+    Evaluates a strategy attempt and returns a notification level — or none.
+
+    Two notification levels (never a block):
+      "warning"  — strategy or context signals unlimited/undefined risk
+                   (naked options, ratio spreads, is_undefined_risk=True).
+                   Shown regardless of investor level.
+      "advisory" — strategy or context requires a higher level than assessed.
+                   Explains the gap and suggests next steps, but does not
+                   prevent the action.
+      null       — no friction; investor is assessed at the appropriate level
+                   and no risk flags apply.
 
     Args:
         attempted_action: strategy key from STRATEGY_GATES, e.g. 'iron_condor'
         investor_level:   'beginner' | 'intermediate' | 'advanced'
-        context:          optional trading context signals —
+        context:          optional trading context —
                             leg_count             (int)
                             concurrent_positions  (int)
                             cross_ticker_count    (int)
@@ -193,104 +227,104 @@ def check_action_permission(
                             has_multiple_expirations (bool)
 
     Returns dict with:
-        allowed             bool
-        required_level      str   (strictest gate that fired)
-        blocking_reasons    list  (which gates fired and why)
-        alternatives        list  (if blocked: learn_more, take_assessment, paper_trading)
+        attempted_action  str
+        investor_level    str
+        notification      dict | None
+          level           "advisory" | "warning"
+          headline        str
+          risks           list[str]   (warning only)
+          gaps            list[str]   (advisory only — which knowledge areas to build)
+          suggestions     list[dict]  (learn_more, take_assessment, paper_trading)
     """
+    ctx = context or {}
     investor_rank = LEVEL_ORDER.get(investor_level, 0)
-
-    # Layer 1: named strategy gate
-    strategy_gate = STRATEGY_GATES.get(attempted_action)
-    strategy_level = strategy_gate["min_level"] if strategy_gate else "advanced"
-    strategy_rank = LEVEL_ORDER[strategy_level]
-
-    # Layer 2: context-based gates
-    context_level = _evaluate_context_gates(context)
-    context_rank = LEVEL_ORDER[context_level] if context_level else -1
-
-    # Take the stricter of the two
-    required_rank = max(strategy_rank, context_rank)
-    required_level = [k for k, v in LEVEL_ORDER.items() if v == required_rank][0]
-    allowed = investor_rank >= required_rank
-
-    if allowed:
-        return {
-            "allowed": True,
-            "attempted_action": attempted_action,
-            "investor_level": investor_level,
-            "required_level": required_level,
-        }
-
-    # Build blocking reasons so the UI can explain *why*
-    blocking_reasons = []
-    if strategy_rank > investor_rank:
-        desc = strategy_gate.get("description", "") if strategy_gate else ""
-        blocking_reasons.append({
-            "gate": "strategy",
-            "reason": f"'{attempted_action}' requires {strategy_level} level. {desc}",
-        })
-    if context_level and context_rank > investor_rank:
-        for gate in CONTEXT_GATES:
-            key = gate["condition"]
-            val = (context or {}).get(key)
-            if val is None:
-                continue
-            op = gate["operator"]
-            threshold = gate.get("threshold")
-            if op == ">=" and isinstance(val, (int, float)):
-                fired = val >= threshold
-            elif op == "between" and isinstance(val, (int, float)):
-                lo, hi = threshold
-                fired = lo <= val <= hi
-            elif op == "is_true":
-                fired = bool(val)
-            else:
-                fired = False
-
-            if fired and LEVEL_ORDER[gate["min_level"]] > investor_rank:
-                blocking_reasons.append({
-                    "gate": f"context:{key}",
-                    "reason": gate["reason"],
-                })
-
-    next_level = {0: "intermediate", 1: "advanced"}.get(investor_rank, "advanced")
     action_label = attempted_action.replace("_", " ")
 
+    strategy_gate = STRATEGY_GATES.get(attempted_action, {})
+    strategy_level = strategy_gate.get("min_level", "advanced")
+    strategy_rank = LEVEL_ORDER[strategy_level]
+
+    # ── Warning: undefined/unlimited risk ─────────────────────────────────────
+    is_undefined = (
+        strategy_gate.get("risk") == "undefined"
+        or ctx.get("is_undefined_risk", False)
+    )
+
+    if is_undefined:
+        risks = [
+            "This strategy carries unlimited or very large loss potential — "
+            "losses are not capped by a premium paid.",
+            "Margin calls can force position closure at an unfavourable price.",
+            "Volatile underlyings can gap through your strike overnight.",
+        ]
+        if strategy_gate.get("risk") == "undefined":
+            risks.append(strategy_gate.get("description", ""))
+
+        return {
+            "attempted_action": attempted_action,
+            "investor_level": investor_level,
+            "notification": {
+                "level": "warning",
+                "headline": f"{action_label.title()} carries unlimited risk",
+                "risks": [r for r in risks if r],
+                "suggestions": _build_suggestions(action_label, investor_rank),
+            },
+        }
+
+    # ── Advisory: assessed level below what this strategy typically requires ──
+    context_level = _highest_context_level(ctx)
+    context_rank = LEVEL_ORDER[context_level] if context_level else -1
+    required_rank = max(strategy_rank, context_rank)
+    required_level = [k for k, v in LEVEL_ORDER.items() if v == required_rank][0]
+
+    has_gap = investor_rank < required_rank
+
+    if has_gap:
+        gaps = []
+        if strategy_rank > investor_rank:
+            desc = strategy_gate.get("description", "")
+            gaps.append(
+                f"{action_label.title()} is typically used by {strategy_level} investors. "
+                + (desc if desc else "")
+            )
+        if context_level and context_rank > investor_rank:
+            for gate in CONTEXT_GATES:
+                if gate["condition"] == "is_undefined_risk":
+                    continue
+                key = gate["condition"]
+                val = ctx.get(key)
+                if val is None:
+                    continue
+                op, threshold = gate["operator"], gate.get("threshold")
+                if op == ">=" and isinstance(val, (int, float)):
+                    fired = val >= threshold
+                elif op == "between" and isinstance(val, (int, float)):
+                    lo, hi = threshold
+                    fired = lo <= val <= hi
+                else:
+                    fired = False
+                if fired and LEVEL_ORDER[gate["min_level"]] > investor_rank:
+                    gaps.append(gate["reason"])
+
+        return {
+            "attempted_action": attempted_action,
+            "investor_level": investor_level,
+            "notification": {
+                "level": "advisory",
+                "headline": (
+                    f"This is typically a {required_level}-level strategy — "
+                    f"here's what to keep in mind"
+                ),
+                "gaps": gaps,
+                "suggestions": _build_suggestions(action_label, investor_rank),
+            },
+        }
+
+    # ── No friction ───────────────────────────────────────────────────────────
     return {
-        "allowed": False,
         "attempted_action": attempted_action,
         "investor_level": investor_level,
-        "required_level": required_level,
-        "blocking_reasons": blocking_reasons,
-        "alternatives": [
-            {
-                "action": "learn_more",
-                "label": f"Learn about {action_label}",
-                "description": (
-                    f"Read a guide on how {action_label} works, "
-                    f"including real examples and risk/reward tradeoffs."
-                ),
-            },
-            {
-                "action": "take_assessment",
-                "label": f"Take the {next_level} assessment to unlock this",
-                "description": (
-                    f"Complete the {next_level}-level knowledge assessment. "
-                    f"It takes ~5 minutes and unlocks {action_label} "
-                    f"along with other {next_level} features."
-                ),
-            },
-            {
-                "action": "paper_trading",
-                "label": "Try it in paper trading first",
-                "description": (
-                    "Practice this strategy on an exact replica of your portfolio "
-                    "with no real money at risk. Your paper portfolio mirrors your "
-                    "current holdings at today's prices."
-                ),
-            },
-        ],
+        "notification": None,
     }
 
 
@@ -366,6 +400,7 @@ def dispatch(name: str, tool_input: dict) -> str:
         result = check_action_permission(
             tool_input["attempted_action"],
             tool_input["investor_level"],
+            tool_input.get("context"),
         )
     elif name == "create_paper_portfolio":
         result = create_paper_portfolio(
@@ -445,10 +480,13 @@ TOOLS = [
     {
         "name": "check_action_permission",
         "description": (
-            "Two-layer gate: checks the named strategy requirement AND optional "
-            "context signals (leg count, concurrent positions, cross-ticker breadth, "
-            "risk type, multiple expiries). Returns the stricter of the two, with "
-            "specific blocking reasons and three alternatives if blocked."
+            "Evaluates a strategy attempt and returns a notification level. "
+            "'warning' if the strategy carries undefined/unlimited risk (naked options, "
+            "ratio spreads, or is_undefined_risk=True in context). "
+            "'advisory' if the strategy or context signals require a higher assessed "
+            "level than the investor currently has — explains the gap and suggests "
+            "next steps without preventing the action. "
+            "null if no friction applies."
         ),
         "input_schema": {
             "type": "object",
@@ -491,7 +529,7 @@ TOOLS = [
         "description": (
             "Create a paper trading portfolio that exactly mirrors the investor's "
             "real holdings at current prices. Call this when the user selects the "
-            "paper_trading alternative from check_action_permission."
+            "paper_trading suggestion from check_action_permission."
         ),
         "input_schema": {
             "type": "object",
