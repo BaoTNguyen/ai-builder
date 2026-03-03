@@ -9,16 +9,33 @@ Bottom:       portfolio Greeks bar (option positions only) + events panel.
 from __future__ import annotations
 
 import json
+from collections import defaultdict
 from datetime import date, datetime
 
+import numpy as np
 import pandas as pd
 import streamlit as st
 
 from situational.tools import dispatch
-from situational.agent import run_position_analysis_agent, run_stack_analysis_agent
+from situational.agent import (
+    run_position_analysis_agent,
+    run_portfolio_impact_agent,
+    run_stack_analysis_agent,
+    run_strategy_analysis_agent,
+)
 from portfolio.positions import PORTFOLIO
-from ui.components.charts import pnl_decomp_table, scenario_chart
+from ui.components.charts import combined_payoff_chart, pnl_decomp_table, scenario_chart
 from ui.components.metrics import greeks_bar
+
+
+@st.cache_data(show_spinner=False)
+def _load_portfolio_plan() -> dict:
+    try:
+        with open("profiles/portfolio_plan.json") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
+
 
 # ── Ticker universe ───────────────────────────────────────────────────────────
 
@@ -134,6 +151,49 @@ def _portfolio_greeks(positions: list[dict]) -> dict | None:
     return result.get("summary")
 
 
+def _full_portfolio_greeks(options: list[dict]) -> dict | None:
+    """Beta-weighted Greeks for the full book: equity holdings + options overlay."""
+    equity = [
+        {"position_type": "equity", "ticker": item["ticker"], "shares": item["shares"]}
+        for item in PORTFOLIO["etfs"] + PORTFOLIO["stocks"]
+    ]
+    option_rows = [
+        {
+            "ticker":      p["ticker"],
+            "option_type": p["option_type"],
+            "strike":      p["strike"],
+            "expiry":      p["expiry"],
+            "contracts":   p["contracts"],
+            "sigma":       p["sigma"],
+        }
+        for p in options
+    ]
+    result = json.loads(dispatch("get_portfolio_greeks", {"positions": equity + option_rows}))
+    return result.get("summary")
+
+
+def _equity_summary() -> list[dict]:
+    """Compact equity context for the portfolio impact agent."""
+    live = st.session_state.get("live_prices", {})
+    total_live = sum(
+        (live.get(item["ticker"]) or item["price"]) * item["shares"]
+        for item in PORTFOLIO["etfs"] + PORTFOLIO["stocks"]
+    )
+    rows = []
+    for item in PORTFOLIO["etfs"] + PORTFOLIO["stocks"]:
+        price = live.get(item["ticker"]) or item["price"]
+        mv    = price * item["shares"]
+        rows.append({
+            "ticker":       item["ticker"],
+            "shares":       item["shares"],
+            "book_price":   item["price"],
+            "market_value": round(mv, 0),
+            "weight_pct":   round(mv / total_live * 100, 2) if total_live else 0,
+            "role":         item.get("role", ""),
+        })
+    return rows
+
+
 def _dte(expiry: str) -> int:
     return (datetime.strptime(expiry, "%Y-%m-%d").date() - date.today()).days
 
@@ -188,6 +248,263 @@ def _chain_df(contracts: list[dict], spot: float) -> pd.DataFrame:
             "_mid":    mid,
         })
     return pd.DataFrame(rows)
+
+
+# ── Strategy helpers ──────────────────────────────────────────────────────────
+
+# Flat lookup: ticker → portfolio item (shares + book price)
+_EQUITY_MAP: dict = {
+    item["ticker"]: item
+    for item in PORTFOLIO["etfs"] + PORTFOLIO["stocks"]
+}
+
+
+def _strategy_label(options: list[dict], has_equity: bool) -> str:
+    """Identify common multi-leg strategies by leg structure."""
+    calls  = [p for p in options if p["option_type"] == "call"]
+    puts   = [p for p in options if p["option_type"] == "put"]
+    longs  = [p for p in options if p["contracts"] > 0]
+    shorts = [p for p in options if p["contracts"] < 0]
+    n = len(options)
+
+    # Single option against portfolio equity
+    if has_equity and n == 1:
+        if shorts and calls:
+            return "Covered Call"
+        if longs and puts:
+            return "Protective Put"
+        if longs and calls:
+            return "Long Call (on held stock)"
+        if shorts and puts:
+            return "Cash-Secured Put"
+
+    # Two-leg options-only strategies
+    if n == 2 and len(calls) == 2 and len(longs) == 1 and len(shorts) == 1:
+        long_k  = next(p["strike"] for p in calls if p["contracts"] > 0)
+        short_k = next(p["strike"] for p in calls if p["contracts"] < 0)
+        return "Bull Call Spread" if long_k < short_k else "Bear Call Spread"
+
+    if n == 2 and len(puts) == 2 and len(longs) == 1 and len(shorts) == 1:
+        long_k  = next(p["strike"] for p in puts if p["contracts"] > 0)
+        short_k = next(p["strike"] for p in puts if p["contracts"] < 0)
+        return "Bear Put Spread" if long_k > short_k else "Bull Put Spread"
+
+    if n == 2 and len(calls) == 1 and len(puts) == 1:
+        same_k      = calls[0]["strike"] == puts[0]["strike"]
+        both_long   = len(longs) == 2
+        both_short  = len(shorts) == 2
+        if both_long:
+            return "Long Straddle" if same_k else "Long Strangle"
+        if both_short:
+            return "Short Straddle" if same_k else "Short Strangle"
+        # Risk reversal: long call + short put or vice versa
+        if len(longs) == 1 and len(shorts) == 1:
+            return "Risk Reversal"
+
+    # Three-leg
+    if n == 3 and len(calls) == 3:
+        by_k = sorted(options, key=lambda p: p["strike"])
+        signs = [1 if p["contracts"] > 0 else -1 for p in by_k]
+        if signs == [1, -2, 1] or signs == [1, -1, 1]:
+            return "Call Butterfly"
+
+    if n == 3 and len(puts) == 3:
+        by_k = sorted(options, key=lambda p: p["strike"])
+        signs = [1 if p["contracts"] > 0 else -1 for p in by_k]
+        if signs == [1, -1, 1] or signs == [-1, 2, -1]:
+            return "Put Butterfly"
+
+    return f"{n}-Leg Strategy"
+
+
+def _sum_decomp(positions: list[dict]) -> dict:
+    """Sum pnl_decomposition across all legs at each scenario."""
+    combined: dict = {}
+    for scenario_key in ("minus_5pct", "flat_0pct", "plus_5pct"):
+        combined[scenario_key] = {}
+        for field in ("delta", "gamma", "theta", "vega", "total_approx", "total_exact"):
+            combined[scenario_key][field] = sum(
+                pos["analysis"]["pnl_decomposition"].get(scenario_key, {}).get(field, 0.0)
+                for pos in positions
+                if pos.get("analysis") and pos["analysis"].get("pnl_decomposition")
+            )
+    return combined
+
+
+def _payoff_stats(
+    group: list[dict],
+    spot: float,
+    equity_shares: int = 0,
+    equity_entry: float = 0.0,
+) -> dict:
+    """Compute max profit, max loss, breakevens, and net cost from the payoff grid."""
+    prices = np.linspace(spot * 0.65, spot * 1.35, 300)
+    pnls = []
+    for S_i in prices:
+        total = 0.0
+        for pos in group:
+            mult = pos["contracts"] * 100
+            if pos["option_type"] == "call":
+                intrinsic = max(S_i - pos["strike"], 0.0)
+            else:
+                intrinsic = max(pos["strike"] - S_i, 0.0)
+            total += (intrinsic - pos["entry_price"]) * mult
+        if equity_shares and equity_entry:
+            total += (S_i - equity_entry) * equity_shares
+        pnls.append(total)
+
+    max_profit = max(pnls)
+    max_loss   = min(pnls)
+
+    # Breakeven: prices where P&L crosses zero (sign change between adjacent points)
+    breakevens = []
+    for i in range(len(pnls) - 1):
+        if pnls[i] * pnls[i + 1] <= 0 and abs(pnls[i] - pnls[i + 1]) > 0:
+            # Linear interpolation
+            be = prices[i] + (prices[i + 1] - prices[i]) * (-pnls[i] / (pnls[i + 1] - pnls[i]))
+            breakevens.append(round(float(be), 2))
+
+    # Net cost: sum of premiums paid/received (positive = debit, negative = credit)
+    net_cost = sum(
+        pos["entry_price"] * pos["contracts"] * 100
+        for pos in group
+    )
+
+    return {
+        "max_profit":  round(float(max_profit), 2),
+        "max_loss":    round(float(max_loss), 2),
+        "breakevens":  breakevens,
+        "net_cost":    round(net_cost, 2),
+    }
+
+
+def _strategy_cache_key(ticker: str, expiry: str, group: list[dict]) -> str:
+    """Stable cache key for a strategy group's AI analysis."""
+    legs = tuple(sorted(
+        (p["option_type"], p["strike"], p["contracts"])
+        for p in group
+    ))
+    return f"{ticker}|{expiry}|{legs}"
+
+
+def _strategy_card(
+    ticker: str,
+    expiry: str,
+    group: list[dict],
+    equity_item: dict | None,
+) -> None:
+    """
+    Combined payoff chart + P&L decomp for a multi-leg same-expiry group.
+    Individual position cards still show Greeks + insight separately.
+    """
+    has_equity    = equity_item is not None
+    label         = _strategy_label(group, has_equity)
+    equity_shares = equity_item["shares"] if has_equity else 0
+    equity_entry  = equity_item["price"]  if has_equity else 0.0
+
+    # Derive spot from first position's analysis (all same ticker)
+    spot = 0.0
+    for pos in group:
+        if pos.get("analysis"):
+            spot = pos["analysis"].get("underlying", {}).get("price", 0.0)
+            if spot:
+                break
+
+    if not spot:
+        return  # can't draw chart without a spot price
+
+    st.markdown(f"#### Strategy: {label} — {ticker} · {_expiry_label(expiry)}")
+
+    if has_equity:
+        st.caption(
+            f"Includes {equity_shares:,}× {ticker} shares at book price "
+            f"\\${equity_entry:.2f}/share from portfolio."
+        )
+
+    st.plotly_chart(
+        combined_payoff_chart(
+            positions=group,
+            spot=spot,
+            ticker=ticker,
+            strategy_label=label,
+            equity_shares=equity_shares,
+            equity_entry=equity_entry,
+        ),
+        use_container_width=True,
+        key=f"strat_{ticker}_{expiry}",
+    )
+
+    # Combined P&L decomp if all legs have analysis data
+    if all(pos.get("analysis", {}).get("pnl_decomposition") for pos in group):
+        st.markdown(
+            "**Combined P&L decomposition**",
+            help=(
+                "Sum of each Greek's P&L contribution across all legs. "
+                "Opposing legs partially cancel — e.g. a spread's net delta "
+                "is smaller than either leg alone."
+            ),
+        )
+        pnl_decomp_table(_sum_decomp(group))
+
+    # ── Per-strategy AI analysis button ──────────────────────────────────────
+    skey        = _strategy_cache_key(ticker, expiry, group)
+    cache_store = st.session_state.setdefault("_strategy_analysis", {})
+    cached_sa   = cache_store.get(skey)
+
+    col_btn, _ = st.columns([2, 5])
+    with col_btn:
+        if st.button(
+            "Analyse strategy",
+            type="secondary",
+            use_container_width=True,
+            key=f"sa_btn_{ticker}_{expiry}",
+        ):
+            investor_lvl = (
+                st.session_state.get("investor_profile", {}).get("level", "intermediate")
+                if st.session_state.get("investor_profile") else "intermediate"
+            )
+            n_legs = len(group)
+            with st.spinner(
+                f"Analysing {n_legs} leg{'s' if n_legs != 1 else ''} "
+                f"then synthesising {label}…"
+            ):
+                # Agent 1: run for any leg without a cached insight
+                events_data = _load_events(ticker).get("events", {})
+                for pos in group:
+                    ikey = _insight_key(
+                        pos["ticker"], pos["option_type"],
+                        pos["strike"], pos["expiry"], pos["contracts"],
+                    )
+                    leg_insight = _cached_insight(ikey)
+                    if leg_insight is None:
+                        leg_insight = run_position_analysis_agent(
+                            pos, events_data.get("events", events_data),
+                            investor_level=investor_lvl,
+                        )
+                        _store_insight(ikey, leg_insight)
+                    pos["insight"] = leg_insight
+
+                # Agent 2: strategy synthesis
+                stats      = _payoff_stats(group, spot, equity_shares, equity_entry)
+                net_greeks = _sum_decomp(group)
+                cached_sa  = run_strategy_analysis_agent(
+                    strategy_label    = label,
+                    group             = group,
+                    net_greeks        = net_greeks,
+                    payoff_stats      = stats,
+                    events            = events_data,
+                    investor_level    = investor_lvl,
+                    position_insights = [p.get("insight", "") for p in group],
+                    equity_shares     = equity_shares,
+                    equity_entry      = equity_entry,
+                )
+            cache_store[skey] = cached_sa
+            st.rerun()
+
+    if cached_sa:
+        parts     = [p.strip() for p in cached_sa.split("•") if p.strip()]
+        formatted = "\n\n".join(f"• {p}" for p in parts).replace("$", r"\$")
+        st.info(formatted)
 
 
 # ── Chain browser ─────────────────────────────────────────────────────────────
@@ -290,14 +607,25 @@ def _chain_browser() -> dict | None:
         f"{'ITM' if itm else 'OTM'}"
     )
 
-    n_contracts = st.number_input(
-        "Contracts  (1 contract = 100 shares)",
-        min_value=1, max_value=500, value=1, step=1,
-        key=f"ncon_{ticker}_{selected_expiry}_{strike}_{side}",
-    )
+    col_dir, col_n = st.columns([1, 2])
+    with col_dir:
+        direction = st.radio(
+            "Direction",
+            ["Buy", "Sell"],
+            horizontal=True,
+            key=f"dir_{ticker}_{selected_expiry}_{strike}_{side}",
+        )
+    with col_n:
+        n_contracts = st.number_input(
+            "Contracts  (1 = 100 shares)",
+            min_value=1, max_value=500, value=1, step=1,
+            key=f"ncon_{ticker}_{selected_expiry}_{strike}_{side}",
+        )
+
+    signed = n_contracts if direction == "Buy" else -n_contracts
 
     if st.button(
-        f"Add {n_contracts}× {ticker} ${strike:.2f} {option_type.upper()} — {_expiry_label(selected_expiry)}",
+        f"{direction.upper()} {n_contracts}× {ticker} ${strike:.2f} {option_type.upper()} — {_expiry_label(selected_expiry)}",
         type="primary",
         use_container_width=True,
         key=f"add_{ticker}_{selected_expiry}_{strike}_{side}",
@@ -307,7 +635,7 @@ def _chain_browser() -> dict | None:
             "option_type": option_type.lower(),
             "strike":      strike,
             "expiry":      selected_expiry,
-            "contracts":   n_contracts,
+            "contracts":   signed,
             "entry_price": mid if mid > 0 else 0.01,
             "sigma":       iv_raw if iv_raw > 0 else 0.30,
         }
@@ -317,13 +645,15 @@ def _chain_browser() -> dict | None:
 
 # ── Position card ─────────────────────────────────────────────────────────────
 
-def _position_card(pos: dict, idx: int) -> None:
-    dte  = _dte(pos["expiry"])
+def _position_card(pos: dict, idx: int, hide_charts: bool = False) -> None:
+    dte       = _dte(pos["expiry"])
+    contracts = pos["contracts"]
+    direction = "BUY" if contracts > 0 else "SELL"
     analyzed_keys: set = st.session_state.get("_analyzed_position_keys", set())
     pos_key = (pos["ticker"], pos["option_type"], pos["strike"], pos["expiry"])
     new_tag = "  · NEW" if pos_key not in analyzed_keys else ""
     label = (
-        f"{pos['contracts']}× {pos['ticker']}  "
+        f"{direction} {abs(contracts)}× {pos['ticker']}  "
         f"{pos['expiry']}  ${pos['strike']}  "
         f"{pos['option_type'].upper()}  —  {dte} DTE"
         f"{new_tag}"
@@ -337,9 +667,33 @@ def _position_card(pos: dict, idx: int) -> None:
             st.session_state.pop("_analyzed_position_keys", None)
             st.rerun()
 
+
         insight = pos.get("insight")
         if insight:
-            st.info(insight.replace("$", r"\$"))
+            parts = [p.strip() for p in insight.split("•") if p.strip()]
+            formatted = "\n\n".join(f"• {p}" for p in parts).replace("$", r"\$")
+            st.info(formatted)
+        elif not hide_charts:
+            # Standalone position — offer lazy per-position analysis
+            if st.button("Analyse position", key=f"analyse_pos_{idx}", type="secondary"):
+                investor_lvl = (
+                    st.session_state.get("investor_profile", {}).get("level", "intermediate")
+                    if st.session_state.get("investor_profile") else "intermediate"
+                )
+                ikey = _insight_key(
+                    pos["ticker"], pos["option_type"],
+                    pos["strike"], pos["expiry"], pos["contracts"],
+                )
+                cached = _cached_insight(ikey)
+                with st.spinner(f"Analysing {pos['ticker']} position…"):
+                    if cached is None:
+                        events_data = _load_events(pos["ticker"]).get("events", {})
+                        cached = run_position_analysis_agent(
+                            pos, events_data, investor_level=investor_lvl,
+                        )
+                        _store_insight(ikey, cached)
+                pos["insight"] = cached
+                st.rerun()
 
         analysis = pos.get("analysis")
         if not analysis:
@@ -355,10 +709,20 @@ def _position_card(pos: dict, idx: int) -> None:
         )
 
         if investor_level == "beginner":
+            theta     = abs(greeks.get("theta_per_day", 0))
+            theta_30  = abs(greeks.get("theta_at_30dte", theta))
+            vega      = abs(greeks.get("vega_per_pct", 0))
+            dte       = _dte(pos["expiry"])
+            if dte > 30 and theta_30 > theta * 1.05:
+                decay_text = (
+                    f"Currently loses **\\${theta:.2f}/day** to time decay, "
+                    f"accelerating to ~**\\${theta_30:.2f}/day** in the final 30 days before expiry."
+                )
+            else:
+                decay_text = f"Loses **\\${theta:.2f}/day** to time decay."
             st.info(
-                f"This position loses **${abs(greeks.get('theta_per_day', 0)):.2f}/day** "
-                f"to time decay, and gains/loses **${abs(greeks.get('vega_per_pct', 0)):.2f}** "
-                f"per 1% change in implied volatility.",
+                f"{decay_text} "
+                f"Gains/loses **\\${vega:.2f}** per 1% change in implied volatility.",
                 icon="ℹ️",
             )
         else:
@@ -367,8 +731,13 @@ def _position_card(pos: dict, idx: int) -> None:
                       help="Change in option price per $1 move in the underlying.")
             g2.metric("Gamma",        f"{greeks.get('gamma', 0):.6f}",
                       help="Rate of change of delta per $1 move. Highest ATM near expiry.")
+            theta_30 = greeks.get("theta_at_30dte")
+            theta_help = (
+                "Daily time decay in dollars at current DTE. "
+                + (f"Accelerates to ${theta_30:+.2f}/day at 30 DTE." if theta_30 else "")
+            )
             g3.metric("Theta / day",  f"${greeks.get('theta_per_day', 0):+.2f}",
-                      help="Daily time decay in dollars for this position.")
+                      help=theta_help)
             g4.metric("Vega / 1% IV", f"${greeks.get('vega_per_pct', 0):+.2f}",
                       help="P&L change per 1 percentage-point move in implied volatility.")
             und = analysis.get("underlying", {})
@@ -378,26 +747,29 @@ def _position_card(pos: dict, idx: int) -> None:
                 f"Sector: {und.get('sector', '—')}"
             )
 
-        st.markdown("#### Scenario Analysis")
-        if analysis.get("scenario_grid"):
-            st.plotly_chart(
-                scenario_chart(analysis["scenario_grid"], ticker=pos["ticker"]),
-                use_container_width=True,
-                key=f"schart_{idx}",
-            )
+        if not hide_charts:
+            st.markdown("#### Scenario Analysis")
+            if analysis.get("scenario_grid"):
+                st.plotly_chart(
+                    scenario_chart(analysis["scenario_grid"], ticker=pos["ticker"]),
+                    use_container_width=True,
+                    key=f"schart_{idx}",
+                )
 
-        st.markdown(
-            "#### P&L Decomposition",
-            help=(
-                "How much of P&L at each price move comes from each Greek. "
-                "Directional (delta) = stock movement. "
-                "Convexity (gamma) = acceleration effect. "
-                "Time decay (theta) = cost of holding. "
-                "Volatility (vega) = IV change impact."
-            ),
-        )
-        if analysis.get("pnl_decomposition"):
-            pnl_decomp_table(analysis["pnl_decomposition"])
+            st.markdown(
+                "#### P&L Decomposition",
+                help=(
+                    "How much of P&L at each price move comes from each Greek. "
+                    "Directional (delta) = stock movement. "
+                    "Convexity (gamma) = acceleration effect. "
+                    "Time decay (theta) = cost of holding. "
+                    "Volatility (vega) = IV change impact."
+                ),
+            )
+            if analysis.get("pnl_decomposition"):
+                pnl_decomp_table(analysis["pnl_decomposition"])
+        else:
+            st.caption("Scenario chart and P&L decomposition shown in the strategy view above.")
 
 
 
@@ -500,7 +872,28 @@ def show() -> None:
                 events_by_ticker = {
                     t: _load_events(t).get("events", {}) for t in unique_tickers
                 }
-                with st.spinner("Analysing position stack…"):
+                missing = [p for p in positions if not p.get("insight")]
+                with st.spinner(
+                    f"Analysing {len(missing)} position{'s' if len(missing) != 1 else ''}, "
+                    "then synthesising stack…"
+                    if missing else "Synthesising position stack…"
+                ):
+                    # Ensure every position has an Agent 1 insight
+                    for pos in missing:
+                        ikey = _insight_key(
+                            pos["ticker"], pos["option_type"],
+                            pos["strike"], pos["expiry"], pos["contracts"],
+                        )
+                        leg_insight = _cached_insight(ikey)
+                        if leg_insight is None:
+                            leg_insight = run_position_analysis_agent(
+                                pos,
+                                events_by_ticker.get(pos["ticker"], {}),
+                                investor_level=investor_lvl,
+                            )
+                            _store_insight(ikey, leg_insight)
+                        pos["insight"] = leg_insight
+
                     st.session_state["stack_analysis"] = run_stack_analysis_agent(
                         positions=positions,
                         portfolio_summary=summary or {},
@@ -508,7 +901,6 @@ def show() -> None:
                         investor_level=investor_lvl,
                         position_insights=[p.get("insight", "") for p in positions],
                     )
-                # Record which positions were covered in this Agent 2 run
                 st.session_state["_analyzed_position_keys"] = {
                     (p["ticker"], p["option_type"], p["strike"], p["expiry"])
                     for p in positions
@@ -517,7 +909,90 @@ def show() -> None:
 
         if "stack_analysis" in st.session_state:
             with st.container(border=True):
-                st.markdown(st.session_state["stack_analysis"])
+                import re
+                raw = st.session_state["stack_analysis"]
+                # Flatten headings (##/###) to bold so font size stays consistent
+                raw = re.sub(r"^#{1,6}\s+(.+)$", r"**\1**", raw, flags=re.MULTILINE)
+                # Escape dollar signs to prevent LaTeX math mode
+                raw = raw.replace("$", r"\$")
+                st.markdown(raw)
+
+        # ── Portfolio impact analysis ─────────────────────────────────────
+        # Invalidate when positions change (same hash as stack)
+        pi_hash = st.session_state.get("_stack_hash", "")
+        if st.session_state.get("_pi_hash") != pi_hash:
+            st.session_state.pop("portfolio_impact", None)
+            st.session_state["_pi_hash"] = pi_hash
+
+        col_pi, _ = st.columns([3, 4])
+        with col_pi:
+            if st.button(
+                "Analyse portfolio impact",
+                type="primary",
+                use_container_width=True,
+                key="pi_btn",
+            ):
+                investor_lvl = (
+                    st.session_state.get("investor_profile", {}).get("level", "intermediate")
+                    if st.session_state.get("investor_profile") else "intermediate"
+                )
+                unique_tickers = list(dict.fromkeys(p["ticker"] for p in positions))
+                events_by_ticker = {
+                    t: _load_events(t).get("events", {}) for t in unique_tickers
+                }
+                missing = [p for p in positions if not p.get("insight")]
+                with st.spinner("Computing full portfolio impact…"):
+                    # Ensure all positions have Agent 1 insights
+                    for pos in missing:
+                        ikey = _insight_key(
+                            pos["ticker"], pos["option_type"],
+                            pos["strike"], pos["expiry"], pos["contracts"],
+                        )
+                        leg_insight = _cached_insight(ikey)
+                        if leg_insight is None:
+                            leg_insight = run_position_analysis_agent(
+                                pos,
+                                events_by_ticker.get(pos["ticker"], {}),
+                                investor_level=investor_lvl,
+                            )
+                            _store_insight(ikey, leg_insight)
+                        pos["insight"] = leg_insight
+
+                    # Full portfolio Greeks (equity + options)
+                    full_greeks = _full_portfolio_greeks(positions)
+
+                    # Portfolio market value for theta % calculation
+                    live        = st.session_state.get("live_prices", {})
+                    total_mv    = sum(
+                        (live.get(item["ticker"]) or item["price"]) * item["shares"]
+                        for item in PORTFOLIO["etfs"] + PORTFOLIO["stocks"]
+                    )
+
+                    st.session_state["portfolio_impact"] = run_portfolio_impact_agent(
+                        equity_holdings       = _equity_summary(),
+                        options_positions     = positions,
+                        options_greeks        = summary or {},
+                        full_portfolio_greeks = full_greeks or {},
+                        total_portfolio_value = total_mv,
+                        events_by_ticker      = events_by_ticker,
+                        investor_level        = investor_lvl,
+                        strategy_insights     = st.session_state.get("_strategy_analysis"),
+                    )
+                st.rerun()
+
+        if "portfolio_impact" in st.session_state:
+            with st.container(border=True):
+                st.markdown("##### Portfolio Impact")
+                parts     = [p.strip() for p in st.session_state["portfolio_impact"].split("•") if p.strip()]
+                formatted = "\n\n".join(f"• {p}" for p in parts).replace("$", r"\$")
+                st.markdown(formatted)
+            st.warning(
+                "**AI analysis complete.** The analysis above is AI's responsibility. "
+                "Order entry, timing, and position sizing remain with you — these depend on "
+                "real-time market conditions, tax considerations, and personal conviction "
+                "that this system cannot access.",
+                icon="⚠️",
+            )
 
         st.divider()
     else:
@@ -534,30 +1009,23 @@ def show() -> None:
     with left:
         selected = _chain_browser()
         if selected:
-            investor_lvl = (
-                st.session_state.get("investor_profile", {}).get("level", "intermediate")
-                if st.session_state.get("investor_profile") else "intermediate"
-            )
-            key = (selected["ticker"], selected["option_type"], selected["strike"], selected["expiry"])
+            sel_dir = "buy" if selected["contracts"] > 0 else "sell"
+            key = (selected["ticker"], selected["option_type"], selected["strike"], selected["expiry"], sel_dir)
             dup_idx = next(
                 (i for i, p in enumerate(st.session_state.hyp_positions)
-                 if (p["ticker"], p["option_type"], p["strike"], p["expiry"]) == key),
+                 if (p["ticker"], p["option_type"], p["strike"], p["expiry"],
+                     "buy" if p["contracts"] > 0 else "sell") == key),
                 None,
             )
 
             if dup_idx is not None:
-                # Aggregate contracts onto existing entry, re-run analysis
+                # Aggregate contracts onto existing entry, re-run quantitative analysis
                 existing  = st.session_state.hyp_positions[dup_idx]
                 new_total = existing["contracts"] + selected["contracts"]
-                ikey      = _insight_key(
-                    selected["ticker"], selected["option_type"],
-                    selected["strike"], selected["expiry"], new_total,
-                )
-                cached = _cached_insight(ikey)
+                dir_label = "BUY" if new_total > 0 else "SELL"
                 with st.spinner(
-                    f"Updating {selected['ticker']} position "
-                    f"({existing['contracts']} → {new_total} contracts)"
-                    + ("" if cached is None else " — insight from cache"),
+                    f"Updating {selected['ticker']} {dir_label} position "
+                    f"({abs(existing['contracts'])} → {abs(new_total)} contracts)…"
                 ):
                     analysis = _run_analysis(
                         option_type=selected["option_type"],
@@ -568,60 +1036,67 @@ def show() -> None:
                         entry_price=existing["entry_price"],
                         sigma=selected["sigma"],
                     )
-                    if "error" not in analysis:
-                        if cached is None:
-                            events_data = _load_events(selected["ticker"]).get("events", {})
-                            cached = run_position_analysis_agent(
-                                {**existing, "contracts": new_total, "analysis": analysis},
-                                events_data,
-                                investor_level=investor_lvl,
-                            )
-                            _store_insight(ikey, cached)
-                        existing["contracts"] = new_total
-                        existing["sigma"]     = selected["sigma"]
-                        existing["analysis"]  = analysis
-                        existing["insight"]   = cached
-                        st.rerun()
-                    else:
-                        st.error(f"Analysis failed: {analysis['error']}")
+                if "error" not in analysis:
+                    existing["contracts"] = new_total
+                    existing["sigma"]     = selected["sigma"]
+                    existing["analysis"]  = analysis
+                    existing.pop("insight", None)   # stale — re-analysed on next click
+                    st.rerun()
+                else:
+                    st.error(f"Analysis failed: {analysis['error']}")
             else:
-                # New position — check insight cache before calling Agent 1
-                ikey   = _insight_key(
-                    selected["ticker"], selected["option_type"],
-                    selected["strike"], selected["expiry"], selected["contracts"],
-                )
-                cached = _cached_insight(ikey)
-                with st.spinner(
-                    f"Analysing {selected['ticker']} position"
-                    + ("" if cached is None else " — insight from cache"),
-                ):
+                # New position — quantitative analysis only; AI deferred to button
+                with st.spinner(f"Loading {selected['ticker']} position…"):
                     analysis = _run_analysis(**{k: selected[k] for k in [
                         "option_type", "ticker", "strike", "expiry",
                         "contracts", "entry_price", "sigma",
                     ]})
-                    if "error" not in analysis:
-                        if cached is None:
-                            events_data = _load_events(selected["ticker"]).get("events", {})
-                            cached = run_position_analysis_agent(
-                                {**selected, "analysis": analysis},
-                                events_data,
-                                investor_level=investor_lvl,
-                            )
-                            _store_insight(ikey, cached)
-                        selected["analysis"] = analysis
-                        selected["insight"]  = cached
-                        st.session_state.hyp_positions.append(selected)
-                        st.rerun()
-                    else:
-                        st.error(f"Analysis failed: {analysis['error']}")
+                if "error" not in analysis:
+                    selected["analysis"] = analysis
+                    st.session_state.hyp_positions.append(selected)
+                    st.rerun()
+                else:
+                    st.error(f"Analysis failed: {analysis['error']}")
 
     with right:
         if not positions:
             st.caption("Added positions will appear here.")
         else:
             st.subheader(f"Stack — {len(positions)} position{'s' if len(positions) != 1 else ''}")
+
+            # ── Group by (ticker, expiry) for strategy views ──────────────
+            by_group: dict[tuple, list] = defaultdict(list)
+            for pos in positions:
+                by_group[(pos["ticker"], pos["expiry"])].append(pos)
+
+            # Walk positions in insertion order; render each group exactly
+            # once — strategy card + its leg cards together — then a divider
+            # between groups. Standalone positions follow with no dividers.
+            rendered_groups: set = set()
+            standalone_queue: list = []  # (original_index, pos)
+
             for i, pos in enumerate(positions):
-                _position_card(pos, i)
+                gkey   = (pos["ticker"], pos["expiry"])
+                group  = by_group[gkey]
+                equity = _EQUITY_MAP.get(pos["ticker"])
+                is_multi = len(group) >= 2 or (len(group) == 1 and equity)
+
+                if is_multi:
+                    if gkey not in rendered_groups:
+                        # Strategy card (chart + decomp + analyse button)
+                        _strategy_card(pos["ticker"], pos["expiry"], group, equity)
+                        # Leg cards directly underneath — no divider between them
+                        for leg in group:
+                            leg_idx = positions.index(leg)
+                            _position_card(leg, leg_idx, hide_charts=True)
+                        st.divider()
+                        rendered_groups.add(gkey)
+                else:
+                    standalone_queue.append((i, pos))
+
+            # Standalone positions at the end, no dividers
+            for i, pos in standalone_queue:
+                _position_card(pos, i, hide_charts=False)
 
     # ── Events panel ──────────────────────────────────────────────────────────
     if positions:

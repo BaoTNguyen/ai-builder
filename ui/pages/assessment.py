@@ -108,6 +108,31 @@ def _results(profile: dict) -> None:
 
     st.divider()
 
+    def _esc(text: str) -> str:
+        return text.replace("$", r"\$")
+
+    col_s, col_w = st.columns(2)
+    with col_s:
+        with st.expander("Your strengths"):
+            for s in profile.get("strengths", []):
+                st.markdown(f"**{_esc(s['concept_label'])}** — {_esc(s['description'])}")
+
+    with col_w:
+        with st.expander("Areas to strengthen"):
+            priority_order = {"high": 0, "medium": 1, "low": 2}
+            for w in sorted(
+                profile.get("weaknesses", []),
+                key=lambda x: priority_order.get(x.get("priority", "low"), 2),
+            ):
+                badge = (
+                    "🔴" if w.get("priority") == "high"
+                    else "🟡" if w.get("priority") == "medium"
+                    else "🟢"
+                )
+                st.markdown(f"{badge} **{_esc(w['concept_label'])}** — {_esc(w['misconception'])}")
+
+    st.divider()
+
     if st.button("→ View your portfolio", type="primary"):
         st.switch_page(st.session_state["_pages"]["portfolio"])
 

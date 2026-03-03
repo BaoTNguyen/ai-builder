@@ -87,16 +87,11 @@ def screen_options_opportunities(investor_level: str) -> dict:
         ]
 
         for p in cc_eligible:
-            est_monthly = round(p["price"] * 0.015 * p["contracts_available"] * 100, 0)
             opportunities["covered_calls"].append({
                 "ticker": p["ticker"],
                 "role": p.get("role"),
                 "shares": p["shares"],
                 "contracts": p["contracts_available"],
-                "suggested_delta": "0.15–0.20 (OTM, low assignment risk)",
-                "suggested_expiry": "30–45 days",
-                "est_monthly_premium_usd": est_monthly,
-                "annual_income_est_usd": round(est_monthly * 12, 0),
             })
 
         # Explain why share-eligible but role-inappropriate positions are excluded
@@ -149,22 +144,11 @@ def screen_options_opportunities(investor_level: str) -> dict:
         # Prioritise: anchor + hold_growth (these are the positions most worth protecting)
         priority_roles = {"anchor", "hold_growth", "income_etf"}
         for p in sorted(all_positions, key=lambda x: x.get("role", "") not in priority_roles):
-            est_monthly_cost = round(p["market_value"] * 0.007, 0)
             opportunities["protective_puts"].append({
                 "ticker": p["ticker"],
                 "role": p.get("role"),
                 "position_value": p["market_value"],
                 "priority": "high" if p.get("role") in priority_roles else "standard",
-                "suggested_strike": f"~10% OTM (${round(p['price'] * 0.90, 0)})",
-                "suggested_expiry": "60–90 days",
-                "est_monthly_cost_usd": est_monthly_cost,
-                "rationale": (
-                    "Anchor — protecting core buy-and-hold position."
-                    if p.get("role") == "anchor" else
-                    "Growth position — high upside but needs downside floor."
-                    if p.get("role") == "hold_growth" else
-                    "Standard portfolio protection."
-                ),
             })
     else:
         opportunities["blocked_strategies"].append({
@@ -184,19 +168,10 @@ def screen_options_opportunities(investor_level: str) -> dict:
         ]
         for p in accumulation_targets:
             shares_needed = 100 - p["shares"]
-            cash_required = round(p["price"] * 0.95 * 100, 0)
-            est_premium = round(p["price"] * 0.008 * 100, 0)
             opportunities["cash_secured_puts"].append({
                 "ticker": p["ticker"],
                 "current_shares": p["shares"],
                 "shares_to_cc_threshold": shares_needed,
-                "suggested_strike": f"~5% OTM (${round(p['price'] * 0.95, 0)})",
-                "cash_required_usd": cash_required,
-                "est_premium_usd": est_premium,
-                "purpose": (
-                    f"Collect ${est_premium} premium per contract while working toward "
-                    f"{shares_needed} more shares needed for covered call eligibility."
-                ),
             })
     else:
         opportunities["blocked_strategies"].append({

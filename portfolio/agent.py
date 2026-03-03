@@ -35,33 +35,32 @@ REASONING — before call 3, build the plan:
 
   Think through these dimensions:
 
-  INCOME STRATEGIES (covered calls, if level allows):
-    - Which positions have contracts_available > 0?
-    - For each: recommend strike delta, expiry window, estimated monthly premium
-    - Calculate total estimated annual income from the overlay
+  COVERED CALLS (income category, if level allows):
+    - Which positions have contracts_available > 0 and a non-anchor/non-growth role?
+    - For each: note contracts available and write a one-sentence eligibility_note
+      explaining why this position qualifies (share count, role).
+    - Do NOT estimate premiums — actual premiums depend on IV at the time of trading.
 
-  PROTECTION STRATEGIES (protective puts, if level allows):
-    - Which positions have the most concentration risk?
-    - Suggest a tiered approach: full protection on top holdings vs spot hedges
-    - Estimate monthly cost and net income after hedging
+  PROTECTIVE PUTS (protection category, if level allows):
+    - Which positions carry the most concentration risk or are growth-oriented?
+    - Priority = "high" for anchor and hold_growth roles; "standard" otherwise.
+    - Write a one-sentence eligibility_note per position explaining why it's
+      a candidate for downside protection (role, concentration, volatility profile).
+    - Limit to the most meaningful candidates — not every position needs a put.
 
-  ACCUMULATION STRATEGIES (cash-secured puts, if level allows):
-    - Which stocks are one step away from covered call eligibility?
-    - Which stocks does the investor most want to own more of?
-    - Suggest CSPs that collect premium while working toward 100-share thresholds
+  CASH-SECURED PUTS (accumulation category, if level allows):
+    - Which income_value positions are approaching the 100-share covered call threshold?
+    - Write a one-sentence eligibility_note: current shares, shares needed, why it makes
+      sense as an accumulation vehicle.
 
   POSITION SIZING RULES by level:
     Beginner:     max 2% of portfolio per options trade, 5% total options exposure
     Intermediate: max 5% per trade, 15% total exposure
     Advanced:     max 10% per trade, 25% total exposure
 
-  PORTFOLIO GREEKS OVERVIEW:
-    Describe the aggregate delta, theta, and vega exposure the plan creates.
-    Keep it in plain English — e.g., "Portfolio gains ~$X for every $1 SPY moves up."
-
   PRIORITY ACTIONS:
-    List 3–5 specific first steps ordered by impact and simplicity.
-    Each action: ticker, strategy, specific strike/expiry suggestion, rationale.
+    List 3–5 specific first steps ordered by role fit and simplicity.
+    Each action: ticker, strategy, rationale — no specific strike or premium estimates.
 
 CALL 3 — store_portfolio_plan(plan)
   Build and store with this shape:
@@ -81,20 +80,15 @@ CALL 3 — store_portfolio_plan(plan)
           "ticker": str,
           "strategy": "covered_call",
           "contracts": int,
-          "suggested_strike_delta": str,
-          "suggested_expiry": str,
-          "est_monthly_premium_usd": float,
-          "rationale": str
+          "eligibility_note": str
         }
       ],
       "protection": [
         {
           "ticker": str,
           "strategy": "protective_put",
-          "suggested_strike": str,
-          "suggested_expiry": str,
-          "est_monthly_cost_usd": float,
-          "rationale": str
+          "priority": "high" | "standard",
+          "eligibility_note": str
         }
       ],
       "accumulation": [
@@ -103,9 +97,7 @@ CALL 3 — store_portfolio_plan(plan)
           "strategy": "cash_secured_put",
           "current_shares": int,
           "shares_to_goal": int,
-          "suggested_strike": str,
-          "est_premium_usd": float,
-          "rationale": str
+          "eligibility_note": str
         }
       ]
     },
@@ -115,23 +107,11 @@ CALL 3 — store_portfolio_plan(plan)
       "max_per_trade_usd": float,
       "max_total_exposure_usd": float
     },
-    "estimated_annual_impact": {
-      "gross_income_usd": float,
-      "protection_cost_usd": float,
-      "net_impact_usd": float,
-      "net_impact_pct_of_portfolio": float
-    },
-    "portfolio_greeks_overview": {
-      "delta_summary": str,
-      "theta_summary": str,
-      "vega_summary": str
-    },
     "priority_actions": [
       {
         "rank": int,
         "ticker": str,
         "action": str,
-        "specific_trade": str,
         "rationale": str
       }
     ]

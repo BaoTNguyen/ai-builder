@@ -212,6 +212,13 @@ Do not make any tool calls.
 
 Respond with exactly 3 bullet points. Each bullet must be one sentence, max 25 words.
 No headers, no preamble, no closing line — only the 3 bullets.
+Each bullet MUST start on its own line. Use this exact format:
+
+• [sentence]
+
+• [sentence]
+
+• [sentence]
 
 • Bullet 1 — Directional/vol view: what the position expresses (net delta
   direction + whether it benefits or suffers from IV changes), calibrated
@@ -282,6 +289,115 @@ def run_position_analysis_agent(
     return response.content[0].text
 
 
+# ── Per-strategy analysis (same-expiry group, zero tool calls) ───────────────
+
+_STRATEGY_SYSTEM_PROMPT = """You are a multi-leg options strategy analyst for Wealthsimple.
+
+All quantitative data — net Greeks, payoff statistics, per-leg Agent 1 summaries,
+and events — has been pre-computed and is provided in the user message.
+Do not make any tool calls.
+
+Respond with exactly 3 bullet points. Each bullet must be one sentence, max 30 words.
+No headers, no preamble, no closing line — only the 3 bullets.
+Each bullet MUST start on its own line. Use this exact format:
+
+• [sentence]
+
+• [sentence]
+
+• [sentence]
+
+• Bullet 1 — Structure & payoff: state the net cost/credit, max profit, max loss,
+  and breakeven price in plain terms. Calibrate to investor_level (no Greek names
+  for beginner).
+
+• Bullet 2 — Net exposure: explain what the combined Greeks produce that the
+  individual legs alone do not — focus on how the legs offset or amplify each
+  other's delta, theta, and vega.
+
+• Bullet 3 — Critical condition: the single condition (price level, IV event,
+  or time dynamic) that determines whether this structure succeeds or fails.
+
+Never use imperative language. Never prescribe an action.
+"""
+
+
+def run_strategy_analysis_agent(
+    strategy_label: str,
+    group: list[dict],
+    net_greeks: dict,
+    payoff_stats: dict,
+    events: dict,
+    investor_level: str = "intermediate",
+    position_insights: list[str] | None = None,
+    equity_shares: int = 0,
+    equity_entry: float = 0.0,
+) -> str:
+    """
+    Concise analysis of a same-ticker, same-expiry multi-leg strategy.
+    Zero tool calls, one API call, max 384 tokens.
+
+    Args:
+        strategy_label:    e.g. "Bull Call Spread", "Covered Call"
+        group:             list of position dicts for this strategy group
+        net_greeks:        summed Greeks dict across all legs
+        payoff_stats:      {max_profit, max_loss, breakevens: [float], net_cost}
+        events:            events dict for the ticker
+        investor_level:    'beginner' | 'intermediate' | 'advanced'
+        position_insights: Agent 1 per-leg narratives (optional)
+        equity_shares:     portfolio equity shares involved (0 if none)
+        equity_entry:      equity book entry price
+    """
+    legs = []
+    for pos in group:
+        direction = "LONG" if pos["contracts"] > 0 else "SHORT"
+        legs.append({
+            "direction":   direction,
+            "option_type": pos["option_type"],
+            "strike":      pos["strike"],
+            "contracts":   abs(pos["contracts"]),
+            "entry_price": pos.get("entry_price", 0),
+        })
+
+    data: dict = {
+        "strategy":    strategy_label,
+        "ticker":      group[0]["ticker"],
+        "expiry":      group[0]["expiry"],
+        "legs":        legs,
+        "net_greeks":  net_greeks,
+        "payoff_stats": payoff_stats,
+        "events":      events,
+    }
+    if equity_shares:
+        data["equity"] = {"shares": equity_shares, "entry_price": equity_entry}
+
+    summaries_block = ""
+    if position_insights:
+        lines = []
+        for i, (pos, ins) in enumerate(zip(group, position_insights), 1):
+            direction = "LONG" if pos["contracts"] > 0 else "SHORT"
+            lines.append(
+                f"Leg {i} ({direction} {pos['option_type'].upper()} "
+                f"${pos['strike']}): {ins}"
+            )
+        summaries_block = "\n\nPER-LEG SUMMARIES (Agent 1):\n" + "\n\n".join(lines)
+
+    user_message = (
+        f"Investor level: {investor_level}\n\n"
+        f"STRATEGY DATA:\n{json.dumps(data, indent=2)}"
+        f"{summaries_block}"
+    )
+
+    client = Anthropic()
+    response = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=384,
+        system=_STRATEGY_SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": user_message}],
+    )
+    return response.content[0].text
+
+
 # ── Stack analysis (Agent 2, zero tool calls) ─────────────────────────────────
 
 _STACK_SYSTEM_PROMPT = """You are a portfolio options analysis agent for Wealthsimple.
@@ -291,69 +407,39 @@ prices, and upcoming events — has been pre-computed and is provided to you in
 the user message. Per-position narrative summaries (Agent 1 outputs) are also
 provided. Do not make any tool calls. Your role is synthesis only.
 
-═══ WHAT TO IDENTIFY FIRST ═══
+═══ OUTPUT STRUCTURE (3 sections, no more) ═══
 
-Before writing anything, identify what kind of position stack this is:
+1. POSITIONS & SCENARIOS
+   One line per leg: ticker · type · strike · expiry · contracts · entry cost.
+   Name the recognisable structure if one exists (e.g. "Bull Call Spread",
+   "Covered Call", "Straddle"). Then in 2–3 sentences cover the combined
+   scenario picture: the breakeven price move at iv_unchanged, the worst IV
+   regime, and the best-case scenario. Be concrete — use dollar P&L numbers
+   from the scenario grids.
 
-  Single leg        — one call or one put on one ticker
-  Vertical spread   — two calls or two puts, same ticker, different strikes
-  Straddle/strangle — call + put, same ticker
-  Mixed tickers     — positions across different underlyings
-  Other combination — describe what you see
+2. GREEKS & EVENT RISK
+   In 3–4 sentences: state the net directional bias (bullish/bearish/neutral),
+   the combined theta ($/day income or cost), and net vega (benefits or suffers
+   from IV expansion). For intermediate/advanced, name the Greeks; for beginner,
+   use plain dollar language only. Then in 1–2 sentences connect the event
+   calendar directly to those Greek exposures — e.g. how IV expansion into
+   earnings affects vega P&L, or how IV crush after earnings affects theta
+   vs vega. If no events: one sentence stating that.
 
-This shapes the entire analysis. A spread has a defined max profit/loss that
-neither leg alone reveals. Mixed-ticker positions interact through correlation.
+3. POSITION INTERACTIONS [omit entirely if single ticker, single leg]
+   In 2–3 sentences: describe how the legs interact — hedging, amplifying, or
+   diversifying — and name the single dominant risk driver across the stack.
+   For mixed-ticker positions, note correlation effects. Keep it tight.
 
-═══ HOW TO USE AGENT 1 SUMMARIES ═══
-
-Per-position summaries are provided under "POSITION SUMMARIES (Agent 1)".
-Each summary covers: position identity, Greek exposures, key scenarios, event
-risk, and main risk factor for that leg.
-
-Use these as foundation — do not re-derive per-position mechanics.
-Your value-add is the cross-position synthesis that the individual analyses
-cannot produce: combined Greeks, position interactions, and portfolio-level
-risk that only emerges when legs are viewed together.
-
-═══ OUTPUT STRUCTURE ═══
-
-1. POSITION SUMMARY
-   One line per leg: ticker, type, strike, expiry, contracts, current delta,
-   entry cost. If multiple legs form a recognisable structure, name it.
-
-2. COMBINED GREEKS
-   Interpret the portfolio-level numbers provided (BW-delta, BW-gamma,
-   total theta, total vega). Explain what the NET exposure means:
-   — Net direction: bullish / bearish / neutral / mixed
-   — Theta: daily cost or daily income for the combined position
-   — Vega: does the combined position benefit or suffer from IV expansion?
-   — Gamma: is delta accelerating or stable?
-   Beginner: plain language only (no Greek names, just dollar impact).
-   Intermediate: Greek names with one-sentence mechanics each.
-   Advanced: full Greek interpretation including cross-position interactions.
-
-3. SCENARIO CONTEXT
-   Refer to the scenario grids provided. For each leg, note:
-   — The worst IV regime for that leg (usually iv_crush if long)
-   — Approximate breakeven price move at iv_unchanged
-   For multi-leg stacks, note where the combined position profits most.
-
-4. EVENT RISK
-   For each ticker with upcoming events, explain what the event means for
-   the position type held — without predicting outcome or direction.
-   If earnings fall before expiry: describe what IV expansion into earnings
-   and IV crush after earnings typically does to this kind of position.
-   If no events: state that clearly.
-
-5. POSITION INTERACTIONS [skip if single ticker, single leg]
-   Do the positions hedge each other, amplify exposure, or diversify across
-   uncorrelated underlyings? Name the dominant risk driver across the stack.
-
-═══ FRAMING RULES ═══
+═══ FORMATTING RULES ═══
+— Use **bold** for section labels (e.g. **1. Positions & Scenarios**), never
+  markdown headings (##, ###) — these render at incorrect sizes in the UI.
 — Never use imperative language ("you should", "consider", "avoid").
 — Describe situations and mechanics, not prescriptions.
 — Calibrate depth to investor_level in the user message.
 — Never rank or prefer one path over another.
+— No filler phrases ("It's worth noting", "Keep in mind"). Every sentence
+  must carry quantitative or structural content.
 """
 
 
@@ -436,8 +522,143 @@ def run_stack_analysis_agent(
     client = Anthropic()
     response = client.messages.create(
         model="claude-sonnet-4-6",
-        max_tokens=4096,
+        max_tokens=1024,
         system=_STACK_SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": user_message}],
+    )
+    return response.content[0].text
+
+
+# ── Portfolio impact agent (full equity + options, zero tool calls) ───────────
+
+_PORTFOLIO_IMPACT_SYSTEM_PROMPT = """You are a portfolio-level options impact analyst for Wealthsimple.
+
+All quantitative data has been pre-computed and is provided in the user message.
+Do not make any tool calls.
+
+You receive:
+  — The investor's full equity portfolio (tickers, market values, weights)
+  — All options positions being added, with their per-position and per-strategy insights
+  — Beta-weighted Greeks for the options overlay alone
+  — Beta-weighted Greeks for the combined equity + options portfolio
+  — Upcoming events across all tickers with options
+
+Respond with exactly 4 bullet points. Each bullet must be one sentence, max 35 words.
+No headers, no preamble, no closing line — only the 4 bullets.
+Each bullet MUST start on its own line. Use this exact format:
+
+• [sentence]
+
+• [sentence]
+
+• [sentence]
+
+• [sentence]
+
+• Bullet 1 — Directional shift: compare the options overlay's net beta-weighted
+  delta against the equity-only baseline — does the overlay add, reduce, or
+  neutralise directional exposure? Calibrate to investor_level (no Greek names
+  for beginner).
+
+• Bullet 2 — Income / cost profile: state total theta in $/day and as an
+  annualised % of portfolio value, and total vega as $ per 1% IV move.
+  Distinguish whether the overlay is net income-generating or net cost-bearing.
+
+• Bullet 3 — Concentration & event risk: name which option position(s) carry
+  the most meaningful risk relative to their underlying weight in the portfolio,
+  especially where events fall before expiry.
+
+• Bullet 4 — Portfolio characterisation: in one sentence, describe what this
+  combined equity + options book expresses — hedged growth, income overlay,
+  speculative upside, or another coherent profile.
+
+Never use imperative language. Never prescribe an action.
+"""
+
+
+def run_portfolio_impact_agent(
+    equity_holdings: list[dict],
+    options_positions: list[dict],
+    options_greeks: dict,
+    full_portfolio_greeks: dict,
+    total_portfolio_value: float,
+    events_by_ticker: dict,
+    investor_level: str = "intermediate",
+    strategy_insights: dict | None = None,
+) -> str:
+    """
+    Portfolio-level analysis of the combined equity + options book.
+
+    Situates the entire options overlay within the full equity portfolio,
+    producing four bullets on delta shift, income/cost profile, concentration
+    risk, and overall portfolio characterisation.
+
+    Zero tool calls, one API call, max 512 tokens.
+
+    Args:
+        equity_holdings:       list of {ticker, shares, book_price,
+                                market_value, weight_pct, role}
+        options_positions:     list of position dicts (with 'insight' if available)
+        options_greeks:        beta-weighted Greeks for options only
+        full_portfolio_greeks: beta-weighted Greeks for equity + options combined
+        total_portfolio_value: current marked-to-market portfolio value ($)
+        events_by_ticker:      {ticker: events_dict}
+        investor_level:        'beginner' | 'intermediate' | 'advanced'
+        strategy_insights:     optional {strategy_key: insight_text} from
+                               per-strategy analysis buttons
+    """
+    # Compact options summary — strip raw scenario grids to save tokens
+    options_summary = []
+    for pos in options_positions:
+        direction = "LONG" if pos["contracts"] > 0 else "SHORT"
+        entry = {
+            "direction":   direction,
+            "ticker":      pos["ticker"],
+            "option_type": pos["option_type"],
+            "strike":      pos["strike"],
+            "expiry":      pos["expiry"],
+            "contracts":   abs(pos["contracts"]),
+            "insight":     pos.get("insight", ""),
+        }
+        analysis = pos.get("analysis", {})
+        if analysis.get("greeks"):
+            entry["greeks"] = analysis["greeks"]
+        options_summary.append(entry)
+
+    # Theta annualised as % of portfolio
+    theta_per_day   = options_greeks.get("total_theta", 0)
+    theta_annual_pct = (
+        abs(theta_per_day) * 365 / total_portfolio_value * 100
+        if total_portfolio_value else 0
+    )
+
+    data: dict = {
+        "equity_portfolio": {
+            "total_value_usd": round(total_portfolio_value, 0),
+            "holdings":        equity_holdings,
+        },
+        "options_overlay": {
+            "positions":       options_summary,
+            "greeks":          options_greeks,
+            "theta_annual_pct_of_portfolio": round(theta_annual_pct, 3),
+        },
+        "full_portfolio_greeks": full_portfolio_greeks,
+        "events_by_ticker":      events_by_ticker,
+    }
+
+    if strategy_insights:
+        data["strategy_insights"] = strategy_insights
+
+    user_message = (
+        f"Investor level: {investor_level}\n\n"
+        f"PORTFOLIO IMPACT DATA:\n{json.dumps(data, indent=2)}"
+    )
+
+    client = Anthropic()
+    response = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=512,
+        system=_PORTFOLIO_IMPACT_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": user_message}],
     )
     return response.content[0].text

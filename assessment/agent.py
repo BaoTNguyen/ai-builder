@@ -33,21 +33,35 @@ CALL 2 — classify_level(score)
 
 REASONING — before call 3, infer strengths and weaknesses:
 
-  For each CORRECT answer → strength:
-    Describe the specific knowledge demonstrated, not just "they got it right".
-    e.g., "Understands that long options cap downside to the premium paid,
-    distinguishing them from short positions or stock ownership."
+  Do NOT produce one item per question. Instead, group the correct answers into
+  2–3 holistic strengths and the incorrect answers into 2–3 holistic areas to
+  strengthen. Think thematically about what the pattern of right and wrong
+  answers reveals about the investor's overall understanding.
 
-  For each INCORRECT answer → weakness:
-    Read the text of what they chose and name the specific misconception it implies.
-    e.g., Q4 wrong answer "Buy more tech stocks when they drop" reveals:
-    "Defaults to a buy-the-dip reflex under market stress rather than recognising
-    that protective puts let you stay invested while capping downside — conflates
-    conviction with risk management."
-    Set priority by category:
+  Strengths (from correct answers) — holistic themes only:
+    Look across all correct answers and identify 2–3 broad capabilities.
+    Examples of holistic themes (use these as a guide, not a template):
+      "Risk awareness"            — understands defined vs undefined risk, max loss
+      "Protective strategy logic" — grasps how puts, collars hedge a portfolio
+      "Strategy mechanics"        — correctly applies how income strategies work
+      "Portfolio thinking"        — understands multi-position interactions
+    Each description should be one sentence capturing the underlying capability,
+    not a reference to a specific instrument or Greek.
+
+  Areas to strengthen (from incorrect answers) — holistic themes only:
+    Look across all incorrect answers and identify 2–3 broad capability gaps.
+    Examples of holistic themes (use these as a guide, not a template):
+      "Event-driven risk"         — how binary events interact with option positions
+      "Multi-leg strategy design" — how combining legs changes the risk/reward profile
+      "Volatility dynamics"       — role of IV in option pricing and P&L
+      "Assignment and obligation" — what happens when short options are exercised
+    Each misconception field should describe the pattern of thinking that the
+    wrong answers reveal — one sentence, no instrument or Greek names.
+    Set priority by which category the wrong answers are concentrated in:
       fundamental_safety   → "high"
       strategy_application → "medium"
       advanced_risk        → "low"
+    If errors span categories, use the highest priority among them.
 
 CALL 3 — store_investor_profile(profile)
   Build and store the profile with this exact shape:

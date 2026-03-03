@@ -22,7 +22,7 @@ import yfinance as yf
 
 from situational.data   import get_underlying_data, get_option_chain, get_events
 from situational.greeks import (
-    calculate_greeks,
+    calculate_greeks,   # also used directly for theta_at_30dte
     run_scenario_analysis,
     pnl_decomposition,
     aggregate_portfolio_greeks,
@@ -68,6 +68,14 @@ def _calculate_position_analysis(
         sigma=sigma, contracts=contracts, entry_price=entry_price,
         days_forward=days_forward,
     )
+
+    # Theta at 30 DTE — shows how decay accelerates near expiry.
+    # Only computed when the option has more than 30 days remaining;
+    # otherwise the current theta already reflects near-expiry rates.
+    T_30 = 30 / 365
+    if T > T_30:
+        greeks_30 = calculate_greeks(option_type, S, strike, T_30, r, q, sigma, contracts)
+        analysis["greeks"]["theta_at_30dte"] = greeks_30["theta_per_day"]
 
     return {
         "ticker":     ticker.upper(),
